@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arduino BLE-test</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 16px; }
+  button { font-size: 18px; padding: 12px 20px; margin: 4px 0; }
+  #status { margin: 8px 0; font-weight: bold; }
+  pre { background: #eee; padding: 8px; font-size: 14px; }
+  canvas { width: 100%; border: 1px solid #999; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h2>Arduino BLE-test</h2>
+<button id="connectBtn">Koble til Arduino</button>
+<div id="status">Ikke tilkoblet</div>
+<div id="support"></div>
+<pre id="values">-</pre>
+<div>Akselerometer (mg)</div>
+<canvas id="accCanvas" width="600" height="160"></canvas>
+<div>Gyro (grader/s)</div>
+<canvas id="gyroCanvas" width="600" height="160"></canvas>
+
+<script>
+const SERVICE = "19b10000-e8f2-537e-4f6c-d104768a1214";
+const CHAR    = "19b10001-e8f2-537e-4f6c-d104768a1214";
+const MAX_POINTS = 300;
+
+const statusEl = document.getElementById("status");
+const valuesEl = document.getElementById("values");
+const accHist = [], gyroHist = [];
+let packetCount = 0, lastRateTime = performance.now(), rate = 0;
+let lastT = null, lostGaps = 0;
+
+if (!navigator.bluetooth) {
+  document.getElementById("support").textContent =
+    "Denne nettleseren støtter ikke Web Bluetooth. Åpne siden i Bluefy (iPhone) eller Chrome.";
+}
+
+document.getElementById("connectBtn").onclick = async () => {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "SkiSkyting" }],
+      optionalServices: [SERVICE]
+    });
+    statusEl.textContent = "Kobler til " + device.name + " ...";
+    device.addEventListener("gattserverdisconnected", () => {
+      statusEl.textContent = "Frakoblet";
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    const ch = await service.getCharacteristic(CHAR);
+    ch.addEventListener("characteristicvaluechanged", onData);
+    await ch.startNotifications();
+    statusEl.textContent = "Tilkoblet: " + device.name;
+  } catch (e) {
+    statusEl.textContent = "Feil: " + e.message;
+  }
+};
+
+function onData(ev) {
+  const dv = ev.target.value;
+  if (dv.byteLength < 16) return;
+  const t  = dv.getUint32(0, true);
+  const ax = dv.getInt16(4, true),  ay = dv.getInt16(6, true),  az = dv.getInt16(8, true);
+  const gx = dv.getInt16(10, true) / 10, gy = dv.getInt16(12, true) / 10, gz = dv.getInt16(14, true) / 10;
+
+  // Tell hull i tidsstemplene (forventet 10 ms mellom pakker)
+  if (lastT !== null && t - lastT > 25) lostGaps++;
+  lastT = t;
+
+  packetCount++;
+  const now = performance.now();
+  if (now - lastRateTime >= 1000) {
+    rate = packetCount * 1000 / (now - lastRateTime);
+    packetCount = 0; lastRateTime = now;
+  }
+
+  valuesEl.textContent =
+    `t: ${t} ms\n` +
+    `acc: ${ax}, ${ay}, ${az} mg\n` +
+    `gyro: ${gx.toFixed(1)}, ${gy.toFixed(1)}, ${gz.toFixed(1)} deg/s\n` +
+    `pakker/s: ${rate.toFixed(1)}   hull i data: ${lostGaps}`;
+
+  push(accHist, [ax, ay, az]);
+  push(gyroHist, [gx, gy, gz]);
+  draw("accCanvas", accHist, 4000);
+  draw("gyroCanvas", gyroHist, 2000);
+}
+
+function push(arr, v) {
+  arr.push(v);
+  if (arr.length > MAX_POINTS) arr.shift();
+}
+
+function draw(id, hist, range) {
+  const c = document.getElementById(id), g = c.getContext("2d");
+  g.clearRect(0, 0, c.width, c.height);
+  g.strokeStyle = "#ccc";
+  g.beginPath(); g.moveTo(0, c.height / 2); g.lineTo(c.width, c.height / 2); g.stroke();
+  const colors = ["red", "green", "blue"];
+  for (let k = 0; k < 3; k++) {
+    g.strokeStyle = colors[k];
+    g.beginPath();
+    hist.forEach((p, i) => {
+      const x = i * c.width / MAX_POINTS;
+      const y = c.height / 2 - (p[k] / range) * (c.height / 2);
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+  }
+}
+</script>
+</body>
+</html>
